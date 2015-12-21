@@ -42,8 +42,6 @@ export default class GCForm extends React.Component {
   }
 
   render() {
-<<<<<<< 321a7292df78a1d118aec858208d70afeedc03d2
-=======
     let globalSnack = <div></div>
 
     if (this.props.globalError) {
@@ -62,7 +60,6 @@ export default class GCForm extends React.Component {
         action={null} />
     }
 
->>>>>>> Nicer formatting.
     return (
         <Form
           onError={(errors) => {
