@@ -109,9 +109,10 @@ let rateLimitRoutes = [
 
 function dataLoaderCreator(tablename, idField) {
   return new DataLoader(async (keys) => {
+    // This way it works with strings passed in as well
     let rows = await knex(tablename).whereIn(idField, keys)
     return keys.map((key) => {
-      return rows.find((row) => row[idField] === key)
+      return rows.find((row) => row[idField].toString() === key.toString())
     })
   })
 }
@@ -150,7 +151,7 @@ let createLoaders = () => {
     bsdEventTypes: dataLoaderCreator('bsd_event_types', 'event_type_id'),
     bsdEvents: dataLoaderCreator('bsd_events', 'event_id'),
     bsdAddresses: dataLoaderCreator('bsd_addresses', 'cons_addr_id'),
-    gcBsdGroups: dataLoaderCreator('gc_bsd_groups', 'id')
+    gcBsdGroups: dataLoaderCreator('gc_bsd_groups', 'id'),
   }
 }
 

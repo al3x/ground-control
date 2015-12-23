@@ -64,6 +64,17 @@ const adminRequired = (session) => {
 }
 
 // We should move these into model-helpers or something
+function modelFromBSDSurvey(BSDObject, type) {
+  let modelKeys = {
+    'bsd_surveys': ['signup_form_id', 'signup_form_slug', 'modified_dt', 'create_dt'],
+    'bsd_groups': ['cons_group_id', 'name', 'description', 'modified_dt', 'create_dt']
+  }
+  let keys = modelKeys[type]
+  let model = {}
+  keys.forEach((key) => model[key] = BSDObject[key])
+  return model;
+}
+
 function eventFieldFromAPIField(field) {
 
   let mapFields = {
@@ -102,8 +113,8 @@ function eventFromAPIFields(fields) {
   return event
 }
 
-async function getPrimaryEmail(person) {
-  let emails = await knex('bsd_emails')
+async function getPrimaryEmail(person, transaction) {
+  let query = knex('bsd_emails')
     .where({
       is_primary: true,
       cons_id: person.cons_id
@@ -111,27 +122,38 @@ async function getPrimaryEmail(person) {
     .select('email')
     .first()
 
+  if (transaction)
+    query = query.transacting(transaction)
+
+  let emails = await query
   return emails ? emails.email : null
 }
 
-async function getPrimaryAddress(person) {
-  return knex('bsd_addresses')
+async function getPrimaryAddress(person, transaction) {
+  let query = knex('bsd_addresses')
     .where({
       is_primary: true,
       cons_id: person.cons_id
     })
-    .select('cons_addr_id')
     .first()
+  if (transaction)
+    query = query.transacting(transaction)
+  return query
 }
 
-async function getPrimaryPhone(person) {
-  let phones = await knex('bsd_phones')
+async function getPrimaryPhone(person, transaction) {
+  let query = knex('bsd_phones')
     .where({
       is_primary: true,
       cons_id: person.cons_id
     })
     .select('phone')
     .first()
+
+  if (transaction)
+    query = query.transacting(transaction)
+
+  let phones = await query
   return phones ? phones.phone : null;
 }
 
@@ -219,7 +241,6 @@ const GraphQLListContainer = new GraphQLObjectType({
         let filters = eventFromAPIFields(filterOptions);
         let convertedSortField = eventFieldFromAPIField(sortField)
 
-        console.log(filters, convertedSortField);
         let events = await knex('bsd_events')
           .where(filters)
           .limit(first)
@@ -248,7 +269,7 @@ const GraphQLUser = new GraphQLObjectType({
       type: GraphQLCallAssignmentConnection,
       args: connectionArgs,
       resolve: async (user, {first}) => {
-        let assignments = knex('bsd_call_assignments').limit(first)
+        let assignments = await knex('bsd_call_assignments').limit(first)
         return connectionFromArray(assignments, {first})
       }
     },
@@ -278,21 +299,18 @@ const GraphQLUser = new GraphQLObjectType({
       args: {
         callAssignmentId: { type: GraphQLString }
       },
-      resolve: async (user, {callAssignmentId}) => {
-        return null
-/*        let localId = parseInt(fromGlobalId(callAssignmentId).id, 10)
-        let assignedCalls = await user.getAssignedCalls({
-          where: {
-            call_assignment_id: localId
-          },
+      resolve: async (user, {callAssignmentId}, {rootValue}) => {
+        let localId = fromGlobalId(callAssignmentId).id
+        let assignedCalls = await knex('bsd_assigned_calls').where({
+          'caller_id': user.id,
+          'call_assignment_id': localId
         })
         let assignedCall = assignedCalls[0]
-        let callAssignment = await BSDCallAssignment.findById(localId)
         if (assignedCall) {
-          let interviewee = await assignedCall.getInterviewee()
-          return interviewee
+          return rootValue.loaders.bsdPeople.load(assignedCall.interviewee_id)
         }
         else {
+          let callAssignment = await rootValue.loaders.bsdCallAssignments.load(localId)
           let allOffsets = [-10, -9, -8, -7, -6, -5, -4]
           let validOffsets = []
           allOffsets.forEach((offset) => {
@@ -302,106 +320,70 @@ const GraphQLUser = new GraphQLObjectType({
           })
           if (validOffsets.length === 0)
             return null
-          // This is maybe the worst thing of all time. Switch to knex when we can.
-          let group = await callAssignment.getIntervieweeGroup()
-          let filterQuery = ''
+          let group = await rootValue.loaders.gcBsdGroups.load(callAssignment.gc_bsd_group_id)
+          let filterQuery = null
 
           if (group.cons_group_id)
-            filterQuery = `
-              INNER JOIN (
-                  SELECT cons_id
-                  FROM bsd_person_bsd_groups
-                  WHERE cons_group_id=${group.cons_group_id}
-                ) AS cons_groups
-                ON people.cons_id=cons_groups.cons_id
-            `
-          else if (group.query && group.query !== EVERYONE_GROUP)
-            filterQuery = `
-              INNER JOIN (
-                  SELECT cons_id
-                  FROM bsd_person_gc_bsd_groups
-                  WHERE gc_bsd_group_id=${group.id}
-                ) AS groups
-                ON people.cons_id=groups.cons_id
-            `
-          let query = `
-            SELECT *
-            FROM bsd_people AS people
-            INNER JOIN bsd_emails AS emails
-              ON people.cons_id=emails.cons_id
-            INNER JOIN bsd_phones AS phones
-              ON people.cons_id=phones.cons_id
-            INNER JOIN (
-              SELECT id, cons_id
-              FROM bsd_addresses AS addresses
-              INNER JOIN zip_codes AS zip_codes
-              ON zip_codes.zip=addresses.zip
-              WHERE
-                addresses.is_primary=TRUE AND
-                addresses.state_cd NOT IN ('IA','NH','NV','SC') AND
-                zip_codes.timezone_offset IN (${validOffsets.join(',')})
-              ) AS addresses
-              ON people.cons_id=addresses.cons_id
-            ${filterQuery}
-            LEFT OUTER JOIN bsd_assigned_calls AS assigned_calls
-              ON people.cons_id=assigned_calls.interviewee_id
-            LEFT OUTER JOIN (
-              SELECT id, interviewee_id, attempted_at
-              FROM bsd_calls
-              WHERE
-                (
-                  call_assignment_id = :assignmentId AND
-                  completed = TRUE
-                ) OR
-                (
-                  reason_not_completed IN ('NO_PICKUP', 'CALL_BACK', 'NOT_INTERESTED') AND
-                  attempted_at > :backoffTime
-                ) OR
-                (
-                  reason_not_completed IN ('WRONG_NUMBER', 'DISCONNECTED_NUMBER', 'OTHER_LANGUAGE')
-                ) OR
-                (
-                  call_assignment_id = :assignmentId AND
-                  reason_not_completed = 'NOT_INTERESTED'
-                )
-              ) AS calls
-              ON people.cons_id=calls.interviewee_id
-            WHERE
-              phones.is_primary=TRUE AND
-              emails.is_primary=TRUE AND
-              calls.id IS NULL AND
-              assigned_calls.id IS NULL
-            LIMIT 1
-          `
+            filterQuery = knex('bsd_person_bsd_groups')
+              .select('cons_id')
+              .where('cons_group_id', group.cons_group_id)
 
-          let people = await sequelize.query(query, {
-            replacements: {
-              assignmentId: localId,
-              backoffTime: new Date(new Date() - 7 * 24 * 60 * 60 * 1000)
-            },
-          })
-          if (people && people.length > 0 && people[0].length > 0) {
-            let person = people[0][0]
-            // Also a big hack - not sure how to convert fieldnames to model attributes without doing it explicitly.  We should maybe just switch to using snake case model attributes and get rid of all the manual conversion code.
-            person = BSDPerson.build({
-              ...person,
-              id: person.cons_id,
-              firstName: person.firstname,
-              middleName: person.middlename,
-              lastName: person.lastname,
-              birthDate: person.birth_dt,
-              created_at: person.create_dt,
-              updated_at: person.modified_dt,
+          else if (group.query && group.query !== EVERYONE_GROUP)
+            filterQuery = knex('bsd_person_gc_bsd_groups')
+              .select('cons_id')
+              .where('gc_bsd_group_id', group.id)
+
+          let addressesSubquery = knex('bsd_addresses')
+            .select('id', 'cons_id')
+            .join('zip_codes', 'zip_codes.zip', 'bsd_addresses.zip')
+            .where('is_primary', true)
+            .whereNotIn('state_cd', ['IA', 'NH', 'NV', 'SC'])
+            .whereIn('timezone_offset', validOffsets)
+
+          let previousCallsSubquery = knex('bsd_calls')
+            .select('id', 'interviewee_id', 'attempted_at')
+            .where(function() {
+              this.where('call_assignment_id', localId)
+                .where('completed', true)
             })
-            let assignedCall = await BSDAssignedCall.create({
-              caller_id: user.id,
-              interviewee_id: person.id,
-              call_assignment_id: localId
+            .orWhere(function() {
+              this.whereIn('reason_not_completed', ['NO_PICKUP', 'CALL_BACK', 'NOT_INTERESTED'])
+                .where('attempted_at', '>', new Date(new Date() - 7 * 24 * 60 * 60 * 1000))
             })
-            return person
-          }
+            .orWhereIn('reason_not_completed', ['WRONG_NUMBER', 'DISCONNECTED_NUMBER', 'OTHER_LANGUAGE'])
+            .orWhere(function() {
+              this.where('call_assignment_id', localId)
+                .where('reason_not_completed', 'NOT_INTERESTED')
+            })
+
+          let query = knex('bsd_people')
+            .join('bsd_emails', 'bsd_people.cons_id', 'bsd_emails.cons_id')
+            .join('bsd_phones', 'bsd_people.cons_id', 'bsd_phones.cons_id')
+            .join(addressesSubquery.as('addresses'), 'addresses.cons_id', 'bsd_people.cons_id')
+            .leftOuterJoin('bsd_assigned_calls', 'bsd_people.cons_id', 'bsd_assigned_calls.interviewee_id')
+            .leftOuterJoin(previousCallsSubquery.as('calls'), 'bsd_people.cons_id', 'calls.interviewee_id')
+            .where('bsd_phones.is_primary', true)
+            .where('bsd_emails.is_primary', true)
+            .where('bsd_assigned_calls.id', null)
+            .where('calls.id', null)
+            .limit(1)
+            .first()
+
+          if (filterQuery)
+            query = query.join(filterQuery.as('groups'), 'groups.cons_id', 'bsd_people.cons_id')
+          let person = await query
+          let timestamp = new Date()
+          if (person)
+            await knex('bsd_assigned_calls')
+              .insert({
+                caller_id: user.id,
+                interviewee_id: person.cons_id,
+                call_assignment_id: localId,
+                create_dt: timestamp,
+                modified_dt: timestamp
+              })
+          return person
         }
-        */
       }
     }
   }),
@@ -421,11 +403,11 @@ const GraphQLAddress = new GraphQLObjectType({
     zip: { type: GraphQLString },
     latitude: { type: GraphQLFloat },
     longitude: { type: GraphQLFloat },
-    localTime: {
+    localUTCOffset: {
       type: GraphQLString,
       resolve: async (address) => {
         let tz = TZLookup(address.latitude, address.longitude)
-        return moment().tz(tz).format()
+        return moment().tz(tz).format('Z')
       }
     }
   }),
@@ -489,7 +471,7 @@ const GraphQLPerson = new GraphQLObjectType({
         let eventTypes = null
         if (type) {
           eventTypes = knex('bsd_event_types')
-            .where(name, 'ilike', `%${type}%`)
+            .where('name', 'ilike', `%${type}%`)
             .select('event_type_id')
         }
 
@@ -501,7 +483,8 @@ const GraphQLPerson = new GraphQLObjectType({
         if (eventTypes)
           query = query.whereIn('event_type_id', [eventTypes])
 
-        return query;
+        let events = await query;
+        return events
       }
     }
   }),
@@ -605,7 +588,8 @@ const GraphQLEvent = new GraphQLObjectType({
     startDate: {
       type: GraphQLString,
       resolve: (event) => {
-        return moment(event.start_dt).tz(event.start_tz).format()
+        // Client-side code assumes the time comi
+        return moment(event.start_dt).format('YYYY-MM-DD HH:mm:ss +0000')
       }
     },
     duration: { type: GraphQLInt },
@@ -636,9 +620,9 @@ const GraphQLEvent = new GraphQLObjectType({
       type: GraphQLBoolean,
       resolve: (event) => event.host_receive_rsvp_emails
     },
-    rsvpUserReminderEmail: {
+    rsvpUseReminderEmail: {
       type: GraphQLBoolean,
-      resolve: (event) => event.rsvp_user_reminder_email
+      resolve: (event) => event.rsvp_use_reminder_email
     },
     rsvpEmailReminderHours: {
       type: GraphQLInt,
@@ -667,9 +651,10 @@ const GraphQLCallAssignment = new GraphQLObjectType({
   fields: () => ({
     id: globalIdField('CallAssignment'),
     name: { type: GraphQLString },
+    instructions: { type: GraphQLString },
     survey: {
       type: GraphQLSurvey,
-      resolve: (assignment, _, {rootValue}) => rootValue.loaders.gcBsdSurveys.load(assignment.survey_id)
+      resolve: (assignment, _, {rootValue}) => rootValue.loaders.gcBsdSurveys.load(assignment.gc_bsd_survey_id)
     },
     callsMade: {
       type: GraphQLInt,
@@ -708,7 +693,7 @@ const GraphQLSurvey = new GraphQLObjectType({
       type: GraphQLString,
       resolve: async (survey, _, {rootValue}) => {
         let underlyingSurvey = await rootValue.loaders.bsdSurveys.load(survey.signup_form_id)
-        let slug = underlyingSurvey.slug
+        let slug = underlyingSurvey.signup_form_slug
         return url.resolve('https://' + process.env.BSD_HOST, '/page/s/' + slug)
       }
     },
@@ -721,6 +706,7 @@ const GraphQLEventInput = new GraphQLInputObjectType({
   name: 'EventInput',
   fields: {
     id: { type: GraphQLString },
+    eventIdObfuscated: { type: GraphQLString },
     eventTypeId: { type: GraphQLString },
     hostId: { type: GraphQLString },
     flagApproval: { type: GraphQLBoolean },
@@ -738,13 +724,13 @@ const GraphQLEventInput = new GraphQLInputObjectType({
     startDate: { type: GraphQLString },
     duration: { type: GraphQLInt },
     capacity: { type: GraphQLInt },
-    attendeeVolunteerShow: { type: GraphQLBoolean },
+    attendeeVolunteerShow: { type: GraphQLInt },
     attendeeVolunteerMessage: { type: GraphQLString },
     isSearchable: { type: GraphQLInt },
     publicPhone: { type: GraphQLBoolean },
     contactPhone: { type: GraphQLString },
     hostReceiveRsvpEmails: { type: GraphQLBoolean },
-    rsvpUserReminderEmail: { type: GraphQLBoolean },
+    rsvpUseReminderEmail: { type: GraphQLBoolean },
     rsvpEmailReminderHours: { type: GraphQLInt },
   }
 })
@@ -769,7 +755,7 @@ const GraphQLEditEvents = mutationWithClientMutationId({
 
     for (let index = 0; index < count; index++) {
       let event = params[index]
-//      await BSDClient.updateEvent(event.event_id, event.event_type_id, event.creator_cons_id, event)
+      await BSDClient.updateEvent(event.event_id_obfuscated, event.event_type_id, event.creator_cons_id, event)
       await knex('bsd_events')
         .where('event_id', event.event_id)
         .update({
@@ -822,8 +808,8 @@ const GraphQLSubmitCallSurvey = mutationWithClientMutationId({
   mutateAndGetPayload: async ({callAssignmentId, intervieweeId, completed, leftVoicemail, sentText, reasonNotCompleted, surveyFieldValues}, {rootValue}) => {
     authRequired(rootValue)
     let caller = rootValue.user
-    let localIntervieweeId = parseInt(fromGlobalId(intervieweeId).id, 10)
-    let localCallAssignmentId = parseInt(fromGlobalId(callAssignmentId).id, 10)
+    let localIntervieweeId = fromGlobalId(intervieweeId).id
+    let localCallAssignmentId = fromGlobalId(callAssignmentId).id
     return knex.transaction(async (trx) => {
       // To ensure that the assigned call exists
       let assignedCall = await knex('bsd_assigned_calls')
@@ -852,25 +838,28 @@ const GraphQLSubmitCallSurvey = mutationWithClientMutationId({
       let callAssignment = await knex('bsd_call_assignments')
         .transacting(trx)
         .where('id', localCallAssignmentId)
+        .first()
+
       let survey = await knex('gc_bsd_surveys')
         .transacting(trx)
-        .where('id', callAssignment.survey_id)
+        .where('id', callAssignment.gc_bsd_survey_id)
+        .first()
 
       let fieldValues = JSON.parse(surveyFieldValues)
       fieldValues['person'] = await knex('bsd_people')
         .transacting(trx)
-        .where('id', localIntervieweeId)
+        .where('cons_id', localIntervieweeId)
+        .first()
 
-      if (completed) {
-        if (survey.processors.length === 0)
-          return
-        if (!fieldValues['event_id'])
-          return
-        let person = fieldValues['person']
-        let email = await getPrimaryEmail(person).transacting(trx)
-        let address = await getPrimaryAddress(person).transacting(trx)
-        let zip = address.zip
-        await BSDClient.addRSVPToEvent(email, zip, surveyFields['event_id'])
+      if (completed && survey.processors.length > 0 ) {
+        if (fieldValues['event_id']) {
+          let person = fieldValues['person']
+          let email = await getPrimaryEmail(person, trx)
+          let address = await getPrimaryAddress(person, trx)
+
+          let zip = address.zip
+          await BSDClient.noFailApiRequest('addRSVPToEvent', email, zip, fieldValues['event_id'])
+        }
       }
 
       let promises = [
@@ -880,10 +869,10 @@ const GraphQLSubmitCallSurvey = mutationWithClientMutationId({
           .del(),
         knex.insertAndFetch('bsd_calls', {
             completed: completed,
-            attemptedAt: new Date(),
-            leftVoicemail: leftVoicemail,
-            sentText: sentText,
-            reasonNotCompleted: reasonNotCompleted,
+            attempted_at: new Date(),
+            left_voicemail: leftVoicemail,
+            sent_text: sentText,
+            reason_not_completed: reasonNotCompleted,
             caller_id: caller.id,
             interviewee_id: assignedCall.interviewee_id,
             call_assignment_id: assignedCall.call_assignment_id
@@ -902,7 +891,8 @@ const GraphQLCreateCallAssignment = mutationWithClientMutationId({
     intervieweeGroup: { type: new GraphQLNonNull(GraphQLString) },
     surveyId: { type: new GraphQLNonNull(GraphQLInt) },
     renderer: { type: new GraphQLNonNull(GraphQLString) },
-    processors: { type: new GraphQLList(GraphQLString) }
+    processors: { type: new GraphQLList(GraphQLString) },
+    instructions: { type: GraphQLString }
   },
   outputFields: {
     listContainer: {
@@ -910,7 +900,7 @@ const GraphQLCreateCallAssignment = mutationWithClientMutationId({
       resolve: () => SharedListContainer
     }
   },
-  mutateAndGetPayload: async ({name, intervieweeGroup, surveyId, renderer, processors}, {rootValue}) => {
+  mutateAndGetPayload: async ({name, intervieweeGroup, surveyId, renderer, processors, instructions}, {rootValue}) => {
     adminRequired(rootValue)
     let groupText = intervieweeGroup
     let group = null
@@ -924,7 +914,8 @@ const GraphQLCreateCallAssignment = mutationWithClientMutationId({
       if (!underlyingSurvey) {
         try {
           let BSDSurveyResponse = await BSDClient.getForm(surveyId)
-          underlyingSurvey = await knex.insertAndFetch('bsd_surveys', BSDSurveyResponse, {transaction: trx, idField: 'signup_form_id'})
+          let model = modelFromBSDSurvey(BSDSurveyResponse, 'bsd_surveys')
+          underlyingSurvey = await knex.insertAndFetch('bsd_surveys', model, {transaction: trx, idField: 'signup_form_id'})
         } catch (err) {
           if (err && err.response && err.response.statusCode === 409)
             throw new GraphQLError({
@@ -951,7 +942,8 @@ const GraphQLCreateCallAssignment = mutationWithClientMutationId({
         if (!underlyingGroup) {
           try {
             let BSDGroupResponse = await BSDClient.getConstituentGroup(groupText)
-            underlyingGroup = await knex.insertAndFetch('bsd_groups', BSDGroupResponse, {transaction: trx, idField: 'cons_group_id'})
+            let model = modelFromBSDSurvey(BSDGroupResponse, 'bsd_groups')
+            underlyingGroup = await knex.insertAndFetch('bsd_groups', model, {transaction: trx, idField: 'cons_group_id'})
           } catch (err) {
             if (err && err.response && err.response.statusCode === 409)
               throw new GraphQLError({
@@ -963,22 +955,20 @@ const GraphQLCreateCallAssignment = mutationWithClientMutationId({
           }
         }
 
-        let consGroupID = parseInt(groupText, 10)
+        let consGroupID = groupText
         group = await knex('gc_bsd_groups')
           .transacting(trx)
           .where('cons_group_id', consGroupID)
           .first()
 
         if (!group)
-          group = await knex('gc_bsd_groups')
-            .transacting(trx)
-            .where('cons_group_id', consGroupID)
-            .returning('*')
-            .first()
+          group = await knex.insertAndFetch('gc_bsd_groups', {
+            'cons_group_id': consGroupID,
+          }, {transaction: trx})
       }
       else {
         let query = groupText
-        query = query.toLowerCase().trim().replace(/\*$/, '')
+        query = query.toLowerCase().trim().replace(/;*$/, '')
 
         if (query.indexOf('drop') !== -1)
           throw new GraphQLError({
@@ -1012,6 +1002,7 @@ const GraphQLCreateCallAssignment = mutationWithClientMutationId({
 
       return knex.insertAndFetch('bsd_call_assignments', {
           name: name,
+          instructions: instructions,
           gc_bsd_group_id: group.id,
           gc_bsd_survey_id: survey.id
         }, {transaction: trx});
@@ -1052,10 +1043,10 @@ let RootQuery = new GraphQLObjectType({
       args: {
         id: { type: new GraphQLNonNull(GraphQLString) }
       },
-      resolve: (root, {id}, {rootValue}) => {
+      resolve: async (root, {id}, {rootValue}) => {
         authRequired(rootValue)
         let localId = fromGlobalId(id).id
-        return BSDCallAssignment.findById(localId)
+        return rootValue.loaders.bsdCallAssignments.load(localId)
       }
     },
     node: nodeField

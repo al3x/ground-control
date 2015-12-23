@@ -26,6 +26,16 @@ class EventEdit extends React.Component {
     return allZones;
   }
 
+  eventSearchableOptions() {
+    // actually get valid options for event type later
+    let eventSearchableOptions = {
+      '1': 'Make Public',
+      '0': 'Make Private',
+      '-2': 'Use Event Type Default'
+    };
+    return eventSearchableOptions;
+  }
+
   renderForm() {
     let event = this.props.event;
     const eventSchema = yup.object({
@@ -106,8 +116,8 @@ class EventEdit extends React.Component {
       hostReceiveRsvpEmails: yup.boolean()
         .default(event.hostReceiveRsvpEmails),
 
-      rsvpUserReminderEmail: yup.boolean()
-        .default(event.rsvpUserReminderEmail),
+      rsvpUseReminderEmail: yup.boolean()
+        .default(event.rsvpUseReminderEmail),
 
       attendeeVolunteerShow: yup.boolean()
         .default(event.attendeeVolunteerShow),
@@ -115,8 +125,8 @@ class EventEdit extends React.Component {
       attendeeVolunteerMessage: yup.string()
         .default(event.attendeeVolunteerMessage),
 
-      isSearchable: yup.boolean()
-        .default((event.isSearchable == 1)),
+      isSearchable: yup.string()
+        .default(String(event.isSearchable)),
 
       flagApproval: yup.boolean()
         .default(false)
@@ -129,23 +139,26 @@ class EventEdit extends React.Component {
         schema={eventSchema}
         defaultValue={eventSchema.default()}
         onSubmit={ (data) => {
-          data.duration = data.duration.h * 60 + data.duration.m
+          data.duration = data.duration.h * 60 + data.duration.m;
+          data.isSearchable = Number(data.isSearchable);
           this.props.onSubmit(data)
         }}
       >
         <InfoHeader content='Event Information' />
         <Form.Field
-          name='name'
-          label='Event Name'
-        />
-        <br />
-
-        <Form.Field
           name='eventTypeId'
           type='select'
           label='Event Type'
+          fullWidth={true}
           choices={this.eventTypes()}
         />
+        <br />
+        <Form.Field
+          name='name'
+          label='Event Name'
+          fullWidth={true}
+        />
+        <br />
 
         <Form.Field
           name='description'
@@ -158,17 +171,8 @@ class EventEdit extends React.Component {
 
         <Form.Field
           name='startDate'
-          label='Start Date'
-          minDate={new Date()}
-          autoOk={true}
-          utcOffset={event.localUTCOffset}
-        />
-
-        <Form.Field
-          name='startDate'
-          label='Start Time'
-          type='time'
-          format='ampm'
+          label='Start Date/Time'
+          type='datetime'
           utcOffset={event.localUTCOffset}
         />
 
@@ -177,6 +181,10 @@ class EventEdit extends React.Component {
           type='select'
           label='Time Zone'
           choices={this.timezones()}
+          style={{
+            width: 163,
+            marginTop: 5
+          }}
         /><br/>
 
         <Form.Field
@@ -248,9 +256,11 @@ class EventEdit extends React.Component {
         />
 
         <InfoHeader content='Event Host' />
-
+        {`${event.host.firstName} ${event.host.lastName}`}<br />
+        {`${event.host.email}`}<br />
         <Form.Field
           name="contactPhone"
+          type="phone"
           label="Contact Phone"
         /><br/><br/>
 
@@ -267,7 +277,7 @@ class EventEdit extends React.Component {
         <InfoHeader content='Event Attendees' />
 
         <Form.Field
-          name="rsvpUserReminderEmail"
+          name="rsvpUseReminderEmail"
           label="Send Guests RSVP Email Reminder"
         />
 
@@ -293,14 +303,20 @@ class EventEdit extends React.Component {
         <InfoHeader content='Event Settings' />
 
         <Form.Field
-          name="isSearchable"
-          label="Make Event Public"
-        /><br/>
+          name='isSearchable'
+          type='select'
+          label='Make Event Public?'
+          fullWidth={true}
+          choices={this.eventSearchableOptions()}
+        />
 
         <Form.Field
           name="flagApproval"
           label="Mark this event as incomplete/needs further review"
-        /><br/><br/>
+          onChange={(val) => {
+            this.props.onFieldChanged('flagApproval', val)
+          }}
+        />
 
       <Form.Button  style={ { display: "none" } } ref="submit" type='submit' label='Submit Changes' fullWidth={true} />
 

@@ -35,6 +35,7 @@ export default class AdminCallAssignmentCreationForm extends React.Component {
     surveyId: yup.number().required(),
     intervieweeGroup: yup.string().required(),
     name: yup.string().required(),
+    instructions: yup.string(),
     renderer: yup.string().required(),
     processors: yup.array().of(yup.string()).required()
   })
@@ -65,6 +66,13 @@ export default class AdminCallAssignmentCreationForm extends React.Component {
             />
             <br />
             <Form.Field
+              name='instructions'
+              multiLine={true}
+              rows={5}
+              label="Instructions"
+              hintText="(Optional) Enter HTML or plain text instructions for this call assignment."
+            /><br />
+            <Form.Field
               name='surveyId'
               label='BSD signup form ID'
             /><br />
@@ -72,13 +80,17 @@ export default class AdminCallAssignmentCreationForm extends React.Component {
               name='intervieweeGroup'
               multiLine={true}
               rows={5}
-              label="Target group of interviewees.  Enter a SQL query, BSD cons_group_id, or the word 'everyone'"
+              label="Interviewee group"
+              hintText="Enter a SQL query, BSD cons_group_id, or the word 'everyone'"
             /><br />
             <Form.Field
               name='renderer'
               type='select'
               choices={this.surveyRenderers}
               label='How to render the survey?'
+              style={{
+                width: '100%'
+              }}
             /><br />
             <Form.Field
               name='processors'

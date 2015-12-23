@@ -2,18 +2,20 @@ import React from 'react';
 import {TimePicker} from 'material-ui';
 import {BernieText} from '../styles/bernie-css';
 import moment from 'moment';
+import GCFormField from './GCFormField';
 
-export default class GCTimeField extends React.Component {
+export default class GCTimeField extends GCFormField {
   render() {
-    let floatingLabelText = this.props.floatingLabelText || this.props.label
-    let time = moment(this.props.value).utcOffset(this.props.utcOffset).format('HH:mm')
+    console.log(this.props.value)
+    let time = moment(this.props.value).utcOffset(this.props.utcOffset).toDate()
     let oldDate = moment(this.props.value).utcOffset(this.props.utcOffset)
     return <TimePicker
       {...this.props}
-      floatingLabelText={floatingLabelText}
+      floatingLabelText={this.floatingLabelText()}
       value={time}
       hintText={this.props.label}
       onChange={(_, time) => {
+        console.log(time);
         let newDate = moment(time)
         newDate.set('year', oldDate.get('year'))
         newDate.set('month', oldDate.get('month'))

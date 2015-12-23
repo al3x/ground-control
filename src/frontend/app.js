@@ -12,13 +12,16 @@ import AdminEventsSection from './components/AdminEventsSection';
 import AdminCallAssignmentsSection from './components/AdminCallAssignmentsSection';
 import AdminCallAssignmentCreationForm from './components/AdminCallAssignmentCreationForm';
 import GCTextField from './components/forms/GCTextField';
+import GCPhoneField from './components/forms/GCPhoneField';
 import GCDateField from './components/forms/GCDateField';
-import GCTimeField from './components/forms/GCTimeField';
+import GCDateTimeField from './components/forms/GCDateTimeField';
+//import GCTimeField from './components/forms/GCTimeField';
 import GCPasswordField from './components/forms/GCPasswordField';
 import GCRadioButtonsField from './components/forms/GCRadioButtonsField';
 import GCSelectField from './components/forms/GCSelectField';
 import GCCheckboxesField from './components/forms/GCCheckboxesField';
 import GCBooleanField from './components/forms/GCBooleanField';
+import GCToggleField from './components/forms/GCToggleField';
 import CallAssignmentsDashboard from './components/CallAssignmentsDashboard';
 import AdminCallAssignment from './components/AdminCallAssignment';
 import CallAssignment from './components/CallAssignment';
@@ -69,7 +72,9 @@ Form.addInputTypes({
   array: GCCheckboxesField,
   password: GCPasswordField,
   date: GCDateField,
-  time: GCTimeField
+//  time: GCTimeField, <-- broken
+  datetime: GCDateTimeField,
+  phone: GCPhoneField
 });
 
 const ListContainerQueries = {
@@ -126,7 +131,7 @@ ReactDOM.render(
       component={Dashboard}
       queries={CurrentUserQueries}
       >
-      <IndexRedirect to='/404' />
+      <IndexRedirect to='/call' />
       <Route
         path='call'
         component={CallAssignmentsDashboard}

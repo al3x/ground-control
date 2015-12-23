@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom';
 import Relay from 'react-relay';
 import EventPreview from './EventPreview';
 import EventEdit from './EventEdit';
-import {Toolbar, ToolbarGroup, ToolbarSeparator, ToolbarTitle, SelectField, DropDownMenu, DropDownIcon, Dialog, Tabs, Tab, FlatButton, RaisedButton, IconButton, FontIcon, Checkbox, TextField, Snackbar} from 'material-ui';
+import {Toolbar, ToolbarGroup, ToolbarSeparator, ToolbarTitle, SelectField, DropDownMenu, DropDownIcon, Dialog, Tabs, Tab, FlatButton, RaisedButton, IconButton, FontIcon, Checkbox, TextField} from 'material-ui';
 import {Table, Column, ColumnGroup, Cell} from 'fixed-data-table';
 import {BernieText, BernieColors} from './styles/bernie-css';
 import moment from 'moment';
@@ -45,6 +45,7 @@ class AdminEventsSection extends React.Component {
       activeEventIndex: null,
       previewTabIndex: 0,
       userMessage: '',
+      approveOnUpdate: true,
       undoAction: function(){console.log('undo')}
     };
     window.addEventListener('resize', this._handleResize);
@@ -83,6 +84,7 @@ class AdminEventsSection extends React.Component {
         sortField: attribute,
         sortDirection: sortDir
       });
+      this.setState({selectedRows: []});
     }}
     style={{
       fontFamily: 'Roboto',
@@ -95,7 +97,7 @@ class AdminEventsSection extends React.Component {
       {content}{(this.props.relay.variables.sortField == attribute) ? <FontIcon
       className="material-icons"
       style={{display: 'inline', float: 'right', position: 'relative', top: '-3px'}}
-      >{(this.props.relay.variables.sortDirection == 'ASC') ? 'arrow_drop_down' : 'arrow_drop_up'}</FontIcon> : ''}
+      >{(this.props.relay.variables.sortDirection == 'ASC') ? 'arrow_drop_up' : 'arrow_drop_down'}</FontIcon> : ''}
     </Cell>
   )
 
@@ -134,7 +136,7 @@ class AdminEventsSection extends React.Component {
       lineHeight: '18px',
     }}
     >
-      {(info == 'name') ? data[rowIndex]['node'][col]['firstName'] + ' ' + data[rowIndex]['node'][col]['lastName'] : data[rowIndex]['node'][col][info]}
+      {(info == 'name' && data[rowIndex]['node'] && data[rowIndex]['node'][col]) ? data[rowIndex]['node'][col]['firstName'] + ' ' + data[rowIndex]['node'][col]['lastName'] : (data[rowIndex] && data[rowIndex]['node'] && data[rowIndex]['node'][col] ? data[rowIndex]['node'][col][info] : '')}
     </Cell>
   )
 
@@ -146,7 +148,7 @@ class AdminEventsSection extends React.Component {
       lineHeight: '18px',
     }}
     >
-      {data[rowIndex]['node'][col]['name']}
+      {data[rowIndex]['node'] ? data[rowIndex]['node'][col]['name'] : ''}
     </Cell>
   )
 
@@ -158,7 +160,8 @@ class AdminEventsSection extends React.Component {
       lineHeight: '18px',
     }}
     >
-      {moment(data[rowIndex]['node']['startDate']).utcOffset(data[rowIndex]['node']['localUTCOffset']).format('l LT')}
+      {moment(data[rowIndex]['node']['startDate']).utcOffset(data[rowIndex]['node']['localUTCOffset']).format('l LT')}<br/>
+      {data[rowIndex]['node']['localTimezone']}
     </Cell>
   )
 
@@ -409,6 +412,7 @@ class AdminEventsSection extends React.Component {
       eventIDs: eventsToDelete
     })
     this._handleDeleteModalRequestClose();
+    this._deselectRows({indexesToRemove: this.state.indexesMarkedForDeletion});
   }
 
   renderDeleteModal() {
@@ -507,7 +511,7 @@ class AdminEventsSection extends React.Component {
         }}
       />,
       <FlatButton
-        label={(this.state.previewTabIndex == 0) ? 'Approve' : 'Update and Approve'}
+        label={(this.state.previewTabIndex == 0) ? 'Approve' : (this.state.approveOnUpdate ? 'Update and Approve' : 'Update')}
         key="3"
         secondary={true}
         onTouchTap={() => {
@@ -553,9 +557,6 @@ class AdminEventsSection extends React.Component {
               onEventConfirm={(indexArray) => {
                 this._handleEventConfirmation(indexArray);
               }}
-              onEventEdit={(modifiedEvent) => {
-                this._handleEventEdit(modifiedEvent);
-              }}
               onTabRequest={(eventIndex, tabIndex) => {
                 this._handleEventPreviewOpen(eventIndex, tabIndex);
               }}
@@ -568,15 +569,18 @@ class AdminEventsSection extends React.Component {
             <EventEdit
               ref="eventEdit"
               onSubmit={ (data) => {
-                data.id = activeEvent.node.id
-                data.hostId = activeEvent.node.host.id
-                this.refs.eventEditHandler.send({
-                  events: [data],
-                  listContainer: this.props.listContainer
-                })
+                this._handleEventEdit(activeEvent, data)
               }}
               event={activeEvent}
               listContainer={this.props.listContainer}
+              onFieldChanged={(fieldName, val) => {
+                if (fieldName === 'flagApproval') {
+                  if (val === true)
+                    this.setState({approveOnUpdate: false})
+                  else
+                    this.setState({approveOnUpdate: true})
+                }
+              }}
             />
           </Tab>
         </Tabs>
@@ -594,6 +598,7 @@ class AdminEventsSection extends React.Component {
     let oldVars = this.props.relay.variables.filters;
 
     this.props.relay.setVariables(Object.assign(oldVars, newVar));
+    this.setState({selectedRows: []});
   }
 
   _handleEventPreviewOpen = (eventIndex, tabIndex) => {
@@ -601,7 +606,8 @@ class AdminEventsSection extends React.Component {
     this.setState({
       showEventPreview: true,
       activeEventIndex: eventIndex,
-      previewTabIndex: tabIndex
+      previewTabIndex: tabIndex,
+      approveOnUpdate: true
     });
   }
 
@@ -636,17 +642,50 @@ class AdminEventsSection extends React.Component {
       showDeleteEventDialog: true,
       indexesMarkedForDeletion: eventIndexes
     });
-    // this needs to be fixed
-    // ReactDOM.findDOMNode(adminInterface.refs.deleteConfirmationInput).focus();
   }
 
   _handleEventConfirmation = (eventIndexes) => {
-    this._iterateActiveEvent(1);
+    let events = this.props.listContainer.events.edges;
+    let eventsToConfirm = []
+    events.forEach((event, index) => {
+      if (eventIndexes.indexOf(index) !== -1) {
+        let node = event.node
+        // Bit of a hack, but BSD requires all these fields
+        let eventToConfirm = {
+          flagApproval: false,
+          id: node.id,
+          name: node.name,
+          eventIdObfuscated: node.eventIdObfuscated,
+          eventTypeId: node.eventType.id,
+          description: node.description,
+          venueName: node.venueName,
+          venueZip: node.venueZip,
+          venueCity: node.venueCity,
+          venueState: node.venueState,
+          startDate: node.startDate,
+          localTimezone: node.localTimezone,
+          duration: node.duration,
+          capacity: node.capacity
+        }
+        eventsToConfirm.push(eventToConfirm)
+      }
+    })
+    this.refs.eventEditHandler.send({
+      events: eventsToConfirm,
+      listContainer: this.props.listContainer
+    })
+    this._deselectRows({indexesToRemove: eventIndexes});
   }
 
-  _handleEventEdit = (event) => {
-    console.log(event);
-    // adminInterface._iterateActiveEvent(1);
+  _handleEventEdit = (event, newData) => {
+    this._handlePreviewRequestClose()
+    newData.id = event.id
+    newData.eventIdObfuscated = event.eventIdObfuscated
+    newData.hostId = event.host.id
+    this.refs.eventEditHandler.send({
+      events: [newData],
+      listContainer: this.props.listContainer
+    })
   }
 
   _handleEventSelect = (eventIndex) => {
@@ -661,6 +700,32 @@ class AdminEventsSection extends React.Component {
     this.setState({
       selectedRows: currentSelectedRows
     });
+  }
+
+  _deselectRows = ({indexesToRemove}) => {
+    // indexesToRemove argument is optional
+    let currentSelectedRows = this.state.selectedRows;
+
+    if (indexesToRemove && currentSelectedRows.length != indexesToRemove.length){
+      indexesToRemove.forEach((eventIndex) => {
+        let i = currentSelectedRows.indexOf(eventIndex);
+        console.log(i, currentSelectedRows, indexesToRemove);
+        if (i > -1){
+          currentSelectedRows.splice(i, 1);
+        }
+      });
+
+      currentSelectedRows.forEach((eventIndex, i) => {
+        if (eventIndex > indexesToRemove[0]){
+          currentSelectedRows.splice(i, 1, eventIndex-1);
+        }
+      });
+
+      this.setState({selectedRows: currentSelectedRows});
+    }
+    else {
+      this.setState({selectedRows: []});
+    }
   }
 
   _handleRowClick = (clickEvent, targetRowIndex) => {
@@ -683,14 +748,19 @@ class AdminEventsSection extends React.Component {
 
   render() {
     let events = this.props.listContainer.events.edges;
-
+    console.log(events[0].startDate)
     return (
     <div>
-      <MutationHandler ref='eventDeletionHandler' successMessage='Event deleted!' mutationClass={DeleteEvents} />
+      <MutationHandler
+        ref='eventDeletionHandler'
+        successMessage='Event deleted!'
+        mutationClass={DeleteEvents}
+      />
       <MutationHandler
         ref='eventEditHandler'
         mutationClass={EditEvents}
-        onSuccess={() => this._handleEventConfirmation([this.state.activeEventIndex])} />
+        successMessage="Events edited successfully!"
+      />
       {this.renderDeleteModal()}
       {this.renderCreateModal()}
       {this.renderEventPreviewModal()}
@@ -864,6 +934,7 @@ export default Relay.createContainer(AdminEventsSection, {
       fragment on ListContainer {
         ${EventEdit.getFragment('listContainer')}
         ${DeleteEvents.getFragment('listContainer')}
+        ${EditEvents.getFragment('listContainer')}
         events(
           first: $numEvents
           filterOptions: $filters
@@ -909,7 +980,7 @@ export default Relay.createContainer(AdminEventsSection, {
               publicPhone
               contactPhone
               hostReceiveRsvpEmails
-              rsvpUserReminderEmail
+              rsvpUseReminderEmail
               rsvpEmailReminderHours
               attendeesCount
             }
